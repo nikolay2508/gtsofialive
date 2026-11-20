@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/V111P/gtsofia/main/data"
+DEFAULT_SOURCE_URL = "https://raw.githubusercontent.com/nikolay2508/gtsofia/main/data"
 SOURCE_FILES = ("metadata.json", "routes.json", "stops.json", "directions.json", "shapes.json")
 USER_AGENT = "GTSOFIA-Live-Map-Updater/1.0"
 
