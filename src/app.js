@@ -43,7 +43,7 @@
     unexpectedOnly: false,
     selectedRoute: 'all',
     query: '',
-    showStops: false,
+    showStops: true,
     showRoute: true,
     userMarker: null,
     lastSnapshotAt: null,
@@ -51,7 +51,12 @@
     vehicleAnimationFrame: null,
     selectedVehicleId: null,
     selectedVehicleRouteSignature: null,
-    toastTimer: null
+    toastTimer: null,
+    tripUpdatesCache: null,
+    tripUpdatesRequest: null,
+    activeStopMarker: null,
+    stopArrivalTimer: null,
+    stopPopupGeneration: 0
   };
 
   const $ = (id) => document.getElementById(id);
@@ -398,6 +403,7 @@
       id: String(rawId),
       cgmId: firstClean(raw.cgm_id, raw.vehicle_id, raw.vehicleId, raw.id, rawId),
       routeId,
+      tripId: firstClean(raw.trip_id, raw.tripId, raw.trip?.trip_id, raw.trip?.tripId),
       gtfsRouteId: route?.route_id ? String(route.route_id) : '',
       routeRef: ref,
       normalizedRef,
@@ -581,6 +587,7 @@
       if (!cleanValue(incoming.destinationStopRef)) merged.destinationStopRef = routeChanged ? null : previous.destinationStopRef;
       if (!cleanValue(incoming.nextStopRef)) merged.nextStopRef = routeChanged ? null : previous.nextStopRef;
       if (!cleanValue(incoming.directionId)) merged.directionId = routeChanged ? '' : previous.directionId;
+      if (!cleanValue(incoming.tripId)) merged.tripId = routeChanged ? '' : previous.tripId || '';
     }
 
     // Partial feed messages can omit type/model. Do not erase resolved metadata
@@ -1115,31 +1122,49 @@
         console.warn('Не успяхме да заредим правилата за необичайни превозни средства.', error);
       }
 
-      state.stops = (data.stops || []).map((stop) => ({
-        id: String(stop.stop_id ?? stop.stop_code ?? ''),
-        code: String(stop.stop_code ?? stop.stop_id ?? ''),
-        name: String(stop.stop_name ?? 'Спирка'),
-        lat: Number(stop.stop_lat), lon: Number(stop.stop_lon)
-      })).filter((stop) => Number.isFinite(stop.lat) && Number.isFinite(stop.lon) && stop.lat !== 0 && stop.lon !== 0);
+      // Keep a complete GTFS stop lookup for vehicle destination resolution.
+      // The public stop catalog below is the cleaner set used for map markers.
+      const gtfsStopsByCode = new Map();
       state.stopsByKey = new Map();
-      state.stops.forEach((stop) => {
-        for (const key of [stop.id, stop.code, stopCodeKey(stop.id), stopCodeKey(stop.code)]) {
+      (data.stops || []).forEach((rawStop) => {
+        const id = String(rawStop.stop_id ?? rawStop.stop_code ?? '');
+        const code = String(rawStop.stop_code ?? rawStop.stop_id ?? '');
+        const stop = {
+          id, code,
+          name: String(rawStop.stop_name ?? 'Спирка'),
+          lat: Number(rawStop.stop_lat),
+          lon: Number(rawStop.stop_lon),
+          stopIds: [id]
+        };
+        for (const key of [id, code, stopCodeKey(id), stopCodeKey(code)]) {
           if (key && !state.stopsByKey.has(String(key))) state.stopsByKey.set(String(key), stop);
         }
+        if (code && !gtfsStopsByCode.has(code)) gtfsStopsByCode.set(code, []);
+        if (code) gtfsStopsByCode.get(code).push(id);
       });
 
-      // Use the same Bulgarian stop names as Dimitar's destination-stop lookup.
+      // Use the same Bulgarian names and public stop codes as the destination lookup.
       const stopCatalogResponse = await fetch('./data/stop-catalog.json', { cache: 'no-cache' });
       if (!stopCatalogResponse.ok) throw new Error(`HTTP ${stopCatalogResponse.status} loading stop catalog`);
       const stopCatalog = await stopCatalogResponse.json();
-      for (const item of stopCatalog) {
-        if (!item?.code || !item?.name) continue;
+      state.stops = (Array.isArray(stopCatalog) ? stopCatalog : []).map((item) => {
+        if (!item?.code || !item?.name) return null;
         const code = String(item.code);
         const coords = Array.isArray(item.coords) ? item.coords : [0, 0];
-        const stop = { id: code, code, name: item.name, lat: Number(coords[0]) || 0, lon: Number(coords[1]) || 0 };
+        const stopIds = [...new Set((gtfsStopsByCode.get(code) || [code]).filter(Boolean).map(String))];
+        const stop = {
+          id: code,
+          code,
+          name: String(item.name),
+          lat: Number(coords[0]) || 0,
+          lon: Number(coords[1]) || 0,
+          stopIds
+        };
         state.stopsByKey.set(code, stop);
         state.stopsByKey.set(stopCodeKey(code), stop);
-      }
+        stopIds.forEach((id) => state.stopsByKey.set(id, stop));
+        return stop;
+      }).filter((stop) => stop && Number.isFinite(stop.lat) && Number.isFinite(stop.lon) && stop.lat !== 0 && stop.lon !== 0);
       populateLineFilter();
       if ($('static-data-date')) $('static-data-date').textContent = data.updatedAt ? `CGM GTFS · ${data.updatedAt}` : 'CGM Sofia · GTFS';
       renderRoute();
@@ -1741,8 +1766,11 @@
     }
   }
 
+  const MIN_STOPS_ZOOM = 13;
+  const MAX_VISIBLE_STOPS = 1200;
+
   function visibleStops() {
-    if (!state.map || !state.data || !state.showStops || state.map.getZoom() < 14) return [];
+    if (!state.map || !state.data || !state.showStops || state.map.getZoom() < MIN_STOPS_ZOOM) return [];
     const bounds = state.map.getBounds();
     let allowed = null;
     const selected = selectedRouteParts();
@@ -1751,28 +1779,228 @@
       (state.routesByRef.get(selected.ref) || [])
         .filter((route) => !selected.type || routeType(route) === selected.type)
         .forEach((route) => {
-        Object.values(state.data.directions?.[route.route_id] || {}).forEach((direction) => {
-          (direction.stops || []).forEach((stop) => allowed.add(String(stop.stop_id ?? stop.id ?? '')));
-          (direction.pattern || []).forEach((id) => allowed.add(String(id)));
+          Object.values(state.data.directions?.[route.route_id] || {}).forEach((direction) => {
+            (direction.stops || []).forEach((stop) => allowed.add(String(stop.stop_id ?? stop.id ?? '')));
+            (direction.pattern || []).forEach((id) => allowed.add(String(id)));
+          });
         });
-      });
     }
-    return state.stops.filter((stop) => bounds.contains([stop.lat, stop.lon]) && (!allowed || allowed.has(stop.id)));
+    return state.stops.filter((stop) => bounds.contains([stop.lat, stop.lon]) &&
+      (!allowed || [stop.id, stop.code, ...(stop.stopIds || [])].some((id) => allowed.has(String(id)))));
+  }
+
+  function stopPopupMarkup(stop, arrivals = [], status = 'loading', updatedAt = null) {
+    let content = '';
+    if (status === 'loading') {
+      content = '<div class="stop-arrivals-state"><span class="stop-arrivals-spinner" aria-hidden="true"></span>Зареждане на пристиганията…</div>';
+    } else if (status === 'error') {
+      content = '<div class="stop-arrivals-state is-error">В момента няма връзка с live данните за пристиганията от ЦГМ. Ще опитаме отново автоматично.</div>';
+    } else if (!arrivals.length) {
+      content = '<div class="stop-arrivals-state">Няма публикувани предстоящи realtime пристигания за тази спирка в момента.</div>';
+    } else {
+      content = `<div class="stop-arrivals-list">${arrivals.map((arrival) => {
+        const minutes = Math.max(0, Math.ceil((arrival.arrivalTime * 1000 - Date.now()) / 60_000));
+        const eta = minutes <= 0 ? 'Сега' : `След ${minutes} мин`;
+        const clock = new Intl.DateTimeFormat('bg-BG', {
+          timeZone: 'Europe/Sofia', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+        }).format(new Date(arrival.arrivalTime * 1000));
+        let delayLabel = '';
+        if (Number.isFinite(arrival.delaySeconds) && Math.abs(arrival.delaySeconds) >= 60) {
+          const delayMinutes = Math.max(1, Math.round(Math.abs(arrival.delaySeconds) / 60));
+          delayLabel = arrival.delaySeconds > 0 ? `Закъснение +${delayMinutes} мин` : `Подранява с ${delayMinutes} мин`;
+        }
+        const vehicleLabel = arrival.modelName
+          ? `${arrival.modelName}${arrival.inventory ? ` · № ${arrival.inventory}` : ''}`
+          : (arrival.inventory ? `Превозно средство № ${arrival.inventory}` : 'Моделът не е установен');
+        return `<article class="stop-arrival-row">
+          <div class="stop-arrival-main">
+            ${lineIdentityMarkup(arrival.routeRef, arrival.type, arrival.color, true)}
+            <div class="stop-arrival-destination"><span>Посока</span><strong>${escapeHTML(arrival.destination || 'Не е налична')}</strong></div>
+            <div class="stop-arrival-vehicle">${escapeHTML(vehicleLabel)}</div>
+          </div>
+          <div class="stop-arrival-time"><strong>${eta}</strong><time>${clock}</time>${delayLabel ? `<small>${escapeHTML(delayLabel)}</small>` : ''}</div>
+        </article>`;
+      }).join('')}</div>`;
+    }
+    const updatedLabel = updatedAt
+      ? `Проверено ${new Intl.DateTimeFormat('bg-BG', { timeZone: 'Europe/Sofia', hour: '2-digit', minute: '2-digit' }).format(new Date(updatedAt))}`
+      : 'Прогнози от GTFS в реално време';
+    return `<section class="stop-popup-card">
+      <header class="stop-popup-header"><div><strong>${escapeHTML(stop.name)}</strong><small>Спирка ${escapeHTML(stop.code)}</small></div><span class="stop-live-indicator">LIVE</span></header>
+      ${content}
+      <footer class="stop-popup-footer">${updatedLabel}</footer>
+    </section>`;
+  }
+
+  async function fetchTripUpdates() {
+    const cache = state.tripUpdatesCache;
+    if (cache && Date.now() - cache.fetchedAt < 25_000) return cache.updates;
+    if (state.tripUpdatesRequest) return state.tripUpdatesRequest;
+
+    const url = CONFIG.sources?.gtfs?.tripUpdatesUrl || 'https://gtfs.sofiatraffic.bg/api/v1/trip-updates';
+    state.tripUpdatesRequest = (async () => {
+      try {
+        const response = await fetch(url, {
+          cache: 'no-store',
+          headers: { Accept: 'application/x-protobuf, application/octet-stream' }
+        });
+        if (!response.ok) throw new Error(`GTFS TripUpdates HTTP ${response.status}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const decoder = window.GTSOFIA_GTFS_RT?.decodeTripUpdates;
+        if (typeof decoder !== 'function') throw new Error('GTFS realtime decoder is not loaded');
+        const updates = decoder(bytes);
+        state.tripUpdatesCache = { updates, fetchedAt: Date.now() };
+        return updates;
+      } finally {
+        state.tripUpdatesRequest = null;
+      }
+    })();
+    return state.tripUpdatesRequest;
+  }
+
+  function arrivalModelName(type, inventory, cgmId) {
+    if (!inventory || !['bus', 'tram', 'trolley'].includes(type)) return null;
+    try {
+      const name = window.GTSOFIA_VEHICLE_MODELS?.get_vehicle_model_name?.({
+        type, inv_number: inventory, cgm_id: cgmId || ''
+      });
+      return name && name !== 'Неизвестен модел' ? name : null;
+    } catch (error) {
+      console.warn('Не успяхме да определим модела на превозното средство за пристигане:', error);
+      return null;
+    }
+  }
+
+  function getArrivalsForStop(stop, updates) {
+    const nowSeconds = Date.now() / 1000;
+    const stopIds = new Set((stop.stopIds?.length ? stop.stopIds : [stop.id]).map(String));
+    const liveVehiclesByTrip = new Map();
+    const liveVehiclesByCgmId = new Map();
+    const liveVehiclesByInventory = new Map();
+    state.vehicles.forEach((vehicle) => {
+      if (!isVehicleFresh(vehicle, nowSeconds)) return;
+      if (vehicle.tripId) liveVehiclesByTrip.set(String(vehicle.tripId), vehicle);
+      if (vehicle.cgmId) liveVehiclesByCgmId.set(String(vehicle.cgmId), vehicle);
+      if (vehicle.id) liveVehiclesByCgmId.set(String(vehicle.id), vehicle);
+      if (vehicle.shortInventory) liveVehiclesByInventory.set(String(vehicle.shortInventory), vehicle);
+      if (vehicle.inventory) liveVehiclesByInventory.set(String(vehicle.inventory), vehicle);
+    });
+
+    const predictionsById = new Map();
+    (updates || []).forEach((update) => {
+      const trip = update.trip || {};
+      const tripId = String(trip.trip_id || '');
+      if (!tripId || [3, 7].includes(Number(trip.schedule_relationship))) return; // canceled/deleted
+      const descriptor = update.vehicle || {};
+      // Prefer the exact trip match, then fall back to GTFS VehicleDescriptor identity.
+      // This still identifies the correct vehicle when the live position omits trip_id.
+      const currentVehicle = liveVehiclesByTrip.get(tripId)
+        || liveVehiclesByCgmId.get(String(descriptor.id || ''))
+        || liveVehiclesByInventory.get(String(descriptor.id || ''))
+        || liveVehiclesByInventory.get(String(descriptor.label || ''))
+        || null;
+      const routeId = firstClean(trip.route_id, update.routeId, currentVehicle?.gtfsRouteId);
+      const route = state.routesById.get(routeId) || null;
+      const catalogRoute = route ? null : state.routesByCgmId.get(routeId);
+      const routeRefValue = firstClean(currentVehicle?.routeRef, route ? routeRef(route) : '', catalogRoute?.route_ref);
+      const type = currentVehicle?.type && currentVehicle.type !== 'other'
+        ? currentVehicle.type
+        : normaliseTransportType(route ? routeType(route) : catalogRoute?.type || 'other');
+      const descriptorInventory = /^\d{3,6}$/.test(String(descriptor.id || '')) ? descriptor.id : '';
+      const inventory = firstClean(currentVehicle?.shortInventory, currentVehicle?.inventory, descriptor.label, descriptorInventory);
+      const cgmId = firstClean(currentVehicle?.cgmId, descriptor.id, currentVehicle?.id);
+      const modelName = currentVehicle?.modelName || arrivalModelName(type, inventory, cgmId);
+      const color = routeRefValue ? routeColor(route, routeRefValue, type) : (TYPE_COLORS[type] || TYPE_COLORS.other);
+      let destination = '';
+      if (currentVehicle) {
+        const resolved = resolveVehicleDestination(currentVehicle);
+        if (resolved !== 'Няма данни за дестинацията') destination = resolved;
+      } else if (route && trip.direction_id !== undefined && trip.direction_id !== null) {
+        const directionKey = `D${Number(trip.direction_id) + 1}`;
+        const direction = state.data?.directions?.[route.route_id]?.[directionKey];
+        destination = firstClean(direction?.destination, direction?.headsign);
+      }
+
+      (update.stopTimeUpdates || []).forEach((stopUpdate) => {
+        if (!stopIds.has(String(stopUpdate.stopId)) || Number(stopUpdate.scheduleRelationship) === 1) return;
+        const event = stopUpdate.arrival?.time ? stopUpdate.arrival : stopUpdate.departure;
+        const arrivalTime = Number(event?.time);
+        if (!Number.isFinite(arrivalTime) || arrivalTime < nowSeconds - 60) return;
+        const prediction = {
+          id: `${tripId}:${stopUpdate.stopId}`,
+          tripId,
+          arrivalTime,
+          delaySeconds: Number.isFinite(Number(event?.delay)) ? Number(event.delay) : null,
+          routeRef: routeRefValue || '—',
+          type,
+          color,
+          destination,
+          inventory: inventory || '',
+          modelName
+        };
+        const previous = predictionsById.get(prediction.id);
+        if (!previous || prediction.arrivalTime < previous.arrivalTime) predictionsById.set(prediction.id, prediction);
+      });
+    });
+
+    return [...predictionsById.values()]
+      .sort((a, b) => a.arrivalTime - b.arrivalTime)
+      .slice(0, 12);
+  }
+
+  async function refreshStopArrivals(stop, marker, generation) {
+    try {
+      const updates = await fetchTripUpdates();
+      if (generation !== state.stopPopupGeneration || state.activeStopMarker !== marker || !marker.isPopupOpen()) return;
+      const arrivals = getArrivalsForStop(stop, updates);
+      marker.setPopupContent(stopPopupMarkup(stop, arrivals, 'ready', Date.now()));
+    } catch (error) {
+      console.warn('Не успяхме да заредим realtime пристиганията за спирката:', error);
+      if (generation !== state.stopPopupGeneration || state.activeStopMarker !== marker || !marker.isPopupOpen()) return;
+      marker.setPopupContent(stopPopupMarkup(stop, [], 'error'));
+    }
+  }
+
+  function stopStopArrivalRefresh() {
+    clearInterval(state.stopArrivalTimer);
+    state.stopArrivalTimer = null;
+    state.activeStopMarker = null;
+    state.stopPopupGeneration += 1;
+  }
+
+  function startStopArrivalRefresh(stop, marker) {
+    stopStopArrivalRefresh();
+    state.activeStopMarker = marker;
+    const generation = state.stopPopupGeneration;
+    refreshStopArrivals(stop, marker, generation);
+    state.stopArrivalTimer = setInterval(() => refreshStopArrivals(stop, marker, generation), 30_000);
   }
 
   function renderStops() {
     if (!state.stopLayer || !state.map) return;
+    stopStopArrivalRefresh();
     state.stopLayer.clearLayers();
-    if (!state.showStops || state.map.getZoom() < 14) return;
+    if (!state.showStops || state.map.getZoom() < MIN_STOPS_ZOOM) return;
     const stops = visibleStops();
     const renderer = L.canvas({ padding: .5 });
-    stops.slice(0, 900).forEach((stop) => {
-      const marker = L.circleMarker([stop.lat, stop.lon], { radius: state.map.getZoom() >= 16 ? 4 : 3, color: '#ffffff', weight: 1.5, fillColor: '#111827', fillOpacity: .92, renderer });
-      marker.bindPopup(`<div class="stop-popup"><strong>${escapeHTML(stop.name)}</strong><small>Код на спирката: ${escapeHTML(stop.code)}</small></div>`, { maxWidth: 220 });
-      marker.bindTooltip(stop.name, { direction: 'top', offset: [0, -4] });
+    stops.slice(0, MAX_VISIBLE_STOPS).forEach((stop) => {
+      const marker = L.circleMarker([stop.lat, stop.lon], {
+        radius: state.map.getZoom() >= 16 ? 4.5 : 3.5,
+        color: '#ffffff', weight: 1.5, fillColor: '#111827', fillOpacity: .94,
+        renderer, bubblingMouseEvents: false
+      });
+      marker.bindPopup(() => stopPopupMarkup(stop, [], 'loading'), {
+        maxWidth: 330, minWidth: 275, autoPan: true, keepInView: true,
+        className: 'gts-stop-leaflet-popup'
+      });
+      marker.bindTooltip(`${stop.name} · ${stop.code}`, { direction: 'top', offset: [0, -4] });
+      marker.on('popupopen', () => startStopArrivalRefresh(stop, marker));
+      marker.on('popupclose', () => {
+        if (state.activeStopMarker === marker) stopStopArrivalRefresh();
+      });
       marker.addTo(state.stopLayer);
     });
-    if (stops.length > 900) showToast('Показани са първите 900 спирки във видимата област.', 2600);
+    if (stops.length > MAX_VISIBLE_STOPS) showToast(`Показани са ${MAX_VISIBLE_STOPS} от ${stops.length} спирки във видимата област. Приближи картата за повече детайли.`, 2600);
   }
 
   function updateLastUpdated() {
@@ -2169,9 +2397,16 @@
       updateVehicleMarkers();
       renderVehicleList();
     });
-    $('stops-toggle')?.addEventListener('change', (event) => {
-      state.showStops = event.target.checked;
-      if (state.showStops && state.map && state.map.getZoom() < 14) showToast('Приближи картата до ниво 14 или повече, за да видиш спирките.', 3200);
+    $('stops-toggle')?.addEventListener('click', () => {
+      state.showStops = !state.showStops;
+      const button = $('stops-toggle');
+      button.classList.toggle('is-active', state.showStops);
+      button.setAttribute('aria-pressed', String(state.showStops));
+      button.setAttribute('aria-label', state.showStops ? 'Скрий спирките' : 'Покажи спирките');
+      button.title = state.showStops ? 'Скрий спирките' : 'Покажи спирките';
+      if (state.showStops && state.map && state.map.getZoom() < MIN_STOPS_ZOOM) {
+        showToast('Приближи картата до ниво 13 или повече, за да видиш спирките.', 3200);
+      }
       renderStops();
     });
     $('route-toggle')?.addEventListener('change', (event) => {

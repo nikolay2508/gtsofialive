@@ -1205,3 +1205,93 @@ body.dark-theme .vehicles-section { border-color: rgba(55, 65, 81, .95); backgro
     border-top-color: rgba(55, 65, 81, .95);
   }
 }
+
+
+/* Stop visibility control and clickable stop-arrival popups. */
+.map-stops-toggle {
+  position: absolute;
+  z-index: 500;
+  top: 14px;
+  left: 58px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(229, 231, 235, .95);
+  border-radius: 10px;
+  color: var(--text-mid);
+  background: rgba(255, 255, 255, .96);
+  box-shadow: 0 4px 18px rgba(17, 24, 39, .12);
+  backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 750;
+  cursor: pointer;
+  transition: left .18s ease, background .15s ease, color .15s ease, transform .15s ease;
+}
+.map-stops-toggle:hover { background: #fff; transform: translateY(-1px); }
+.map-stops-toggle:focus-visible { outline: 3px solid rgba(59, 130, 246, .35); outline-offset: 2px; }
+.map-stops-toggle.is-active { color: #174a2b; border-color: #b9dfc8; background: rgba(239, 250, 243, .97); }
+.map-stops-toggle-dot { width: 9px; height: 9px; border: 2px solid #fff; border-radius: 50%; background: #111827; box-shadow: 0 0 0 1px #111827; }
+.map-stops-toggle.is-active .map-stops-toggle-dot { background: #15803d; box-shadow: 0 0 0 1px #15803d; }
+.workspace:not(.sidebar-collapsed) .map-stops-toggle { left: calc(var(--floating-sidebar-width) + 68px); }
+body.dark-theme .map-stops-toggle { color: #e5e7eb; background: rgba(17, 24, 39, .96); border-color: rgba(55, 65, 81, .95); }
+body.dark-theme .map-stops-toggle.is-active { color: #bbf7d0; background: rgba(20, 55, 39, .97); border-color: rgba(34, 130, 78, .7); }
+@media (max-width: 760px) {
+  .map-stops-toggle { top: 8px; right: auto; left: 52px !important; height: 36px; }
+  .map-stops-toggle.is-active { color: #174a2b; }
+}
+
+.gts-stop-leaflet-popup .leaflet-popup-content-wrapper { padding: 0; border-radius: 14px; overflow: hidden; }
+.gts-stop-leaflet-popup .leaflet-popup-content { width: min(312px, calc(100vw - 38px)) !important; max-width: calc(100vw - 38px) !important; margin: 0; }
+.gts-stop-leaflet-popup .leaflet-popup-tip { box-shadow: 0 3px 8px rgba(17, 24, 39, .08); }
+.stop-popup-card { width: 100%; color: #172033; font-family: "Sofia Sans", sans-serif; }
+.stop-popup-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; padding: 12px 13px 10px; border-bottom: 1px solid #e7edf3; background: #fff; }
+.stop-popup-header > div { display: grid; min-width: 0; gap: 2px; }
+.stop-popup-header strong { color: #142033; font-size: 15px; font-weight: 850; line-height: 1.2; }
+.stop-popup-header small { color: #718096; font-size: 10px; font-weight: 650; }
+.stop-live-indicator { flex: 0 0 auto; margin-top: 1px; padding: 3px 6px; border: 1px solid #bde6cc; border-radius: 5px; color: #17653a; background: #eaf8ef; font-size: 8px; font-weight: 900; letter-spacing: .07em; }
+.stop-arrivals-list { max-height: min(360px, 48vh); overflow-y: auto; background: #fff; }
+.stop-arrival-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #edf1f5; }
+.stop-arrival-row:last-child { border-bottom: 0; }
+.stop-arrival-main { display: grid; min-width: 0; flex: 1 1 auto; gap: 5px; }
+.stop-arrival-main .line-identity { gap: 6px; }
+.stop-arrival-main .line-identity-icon, .stop-arrival-main .line-identity-icon img { width: 23px; height: 23px; }
+.stop-arrival-main .line-identity-icon { flex-basis: 23px; }
+.stop-arrival-main .line-identity-pill { min-width: 30px; height: 23px; padding: 0 6px; font-size: 11px; border-radius: 6px; }
+.stop-arrival-destination { display: grid; min-width: 0; gap: 1px; }
+.stop-arrival-destination span { color: #8792a4; font-size: 9px; font-weight: 700; }
+.stop-arrival-destination strong { color: #344054; font-size: 11px; font-weight: 750; line-height: 1.2; overflow-wrap: anywhere; }
+.stop-arrival-vehicle { color: #627086; font-size: 10px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+.stop-arrival-time { display: grid; flex: 0 0 auto; justify-items: end; gap: 2px; padding-top: 1px; }
+.stop-arrival-time strong { color: #11653c; font-size: 15px; font-weight: 900; line-height: 1.1; white-space: nowrap; }
+.stop-arrival-time time { color: #526174; font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.stop-arrival-time small { max-width: 110px; color: #b45309; font-size: 9px; font-weight: 750; text-align: right; }
+.stop-arrivals-state { display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 14px; color: #627086; background: #fff; font-size: 11px; font-weight: 650; line-height: 1.35; }
+.stop-arrivals-state.is-error { color: #a12b2b; }
+.stop-arrivals-spinner { width: 14px; height: 14px; flex: 0 0 14px; border: 2px solid #d8e1eb; border-top-color: #2563eb; border-radius: 50%; animation: stop-arrivals-spin .8s linear infinite; }
+@keyframes stop-arrivals-spin { to { transform: rotate(360deg); } }
+.stop-popup-footer { padding: 7px 12px 8px; border-top: 1px solid #e7edf3; color: #8a95a5; background: #f8fafc; font-size: 9px; font-weight: 650; }
+@media (max-width: 480px) {
+  .gts-stop-leaflet-popup .leaflet-popup-content { width: min(292px, calc(100vw - 30px)) !important; max-width: calc(100vw - 30px) !important; }
+  .stop-popup-header { padding: 10px 11px 9px; }
+  .stop-popup-header strong { font-size: 14px; }
+  .stop-arrival-row { padding: 9px 10px; }
+  .stop-arrival-time strong { font-size: 14px; }
+}
+@media (prefers-reduced-motion: reduce) { .stop-arrivals-spinner { animation: none; } }
+body.dark-theme .gts-stop-leaflet-popup .leaflet-popup-content-wrapper,
+body.dark-theme .stop-popup-header,
+body.dark-theme .stop-arrivals-list,
+body.dark-theme .stop-arrivals-state { color: #e5e7eb; background: #111827; }
+body.dark-theme .stop-popup-header { border-color: #374151; }
+body.dark-theme .stop-popup-header strong,
+body.dark-theme .stop-arrival-destination strong { color: #e5e7eb; }
+body.dark-theme .stop-popup-header small,
+body.dark-theme .stop-arrival-destination span,
+body.dark-theme .stop-arrival-vehicle,
+body.dark-theme .stop-arrival-time time { color: #a7b2c2; }
+body.dark-theme .stop-arrival-row { border-color: #273449; }
+body.dark-theme .stop-arrival-time strong { color: #86efac; }
+body.dark-theme .stop-popup-footer { color: #9aa7b8; border-color: #374151; background: #0b1220; }

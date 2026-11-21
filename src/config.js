@@ -4,7 +4,9 @@ window.GTSOFIA_LIVEMAP_CONFIG = {
     gtfs: {
       label: 'ЦГМ · GTFS',
       // This is the same v2 GTFS WebSocket endpoint used by the reference map.
-      url: 'wss://sofiatraffic-proxy.onrender.com/v2/livemap/'
+      url: 'wss://sofiatraffic-proxy.onrender.com/v2/livemap/',
+      // Official Sofia Traffic GTFS-Realtime TripUpdates feed (protobuf).
+      tripUpdatesUrl: 'https://gtfs.sofiatraffic.bg/api/v1/trip-updates'
     }
   },
   // The reference route metadata is refreshed online, with data/route-catalog.json as fallback.

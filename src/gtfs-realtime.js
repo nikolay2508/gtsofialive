@@ -65,6 +65,7 @@
     readFields(bytes, (field, wire, value) => {
       if (wire === 2 && field === 1) trip.trip_id = asString(value);
       else if (wire === 2 && field === 5) trip.route_id = asString(value);
+      else if (wire === 0 && field === 4) trip.schedule_relationship = asNumber(value);
       else if (wire === 0 && field === 6) trip.direction_id = asNumber(value);
     });
     return trip;
@@ -100,6 +101,57 @@
       else if (wire === 0 && field === 5) result.timestamp = asNumber(value);
       else if (wire === 2 && field === 8) result.vehicle = parseVehicleDescriptor(value);
     });
+    return result;
+  }
+
+  function parseStopTimeEvent(bytes) {
+    const event = {};
+    readFields(bytes, (field, wire, value) => {
+      if (wire !== 0) return;
+      if (field === 1) event.delay = Number((value >> 1n) ^ (-(value & 1n)));
+      else if (field === 2) event.time = asNumber(value);
+      else if (field === 3) event.uncertainty = asNumber(value);
+    });
+    return event;
+  }
+
+  function parseStopTimeUpdate(bytes) {
+    const update = {};
+    readFields(bytes, (field, wire, value) => {
+      if (wire === 2 && field === 2) update.arrival = parseStopTimeEvent(value);
+      else if (wire === 2 && field === 3) update.departure = parseStopTimeEvent(value);
+      else if (wire === 2 && field === 4) update.stopId = asString(value);
+      else if (wire === 0 && field === 5) update.scheduleRelationship = asNumber(value);
+      else if (wire === 0 && field === 1) update.stopSequence = asNumber(value);
+    });
+    return update;
+  }
+
+  function parseTripUpdate(bytes, entityId, feedTimestamp) {
+    const result = { entityId, timestamp: feedTimestamp, stopTimeUpdates: [] };
+    readFields(bytes, (field, wire, value) => {
+      if (wire === 2 && field === 1) result.trip = parseTrip(value);
+      else if (wire === 2 && field === 2) result.stopTimeUpdates.push(parseStopTimeUpdate(value));
+      else if (wire === 2 && field === 3) result.vehicle = parseVehicleDescriptor(value);
+      else if (wire === 0 && field === 4) result.timestamp = asNumber(value);
+      else if (wire === 0 && field === 5) result.delay = Number((value >> 1n) ^ (-(value & 1n)));
+    });
+    return result;
+  }
+
+  function parseTripUpdateEntity(bytes, feedTimestamp) {
+    let id = '';
+    let tripUpdateBytes = null;
+    let deleted = false;
+    readFields(bytes, (field, wire, value) => {
+      if (field === 1 && wire === 2) id = asString(value);
+      else if (field === 2 && wire === 0) deleted = value !== 0n;
+      else if (field === 3 && wire === 2) tripUpdateBytes = value;
+    });
+    if (!tripUpdateBytes || deleted) return null;
+    const result = parseTripUpdate(tripUpdateBytes, id, feedTimestamp);
+    if (!result.trip?.trip_id) return null;
+    result.stopTimeUpdates = result.stopTimeUpdates.filter((item) => item.stopId);
     return result;
   }
 
@@ -141,6 +193,17 @@
     return raw;
   }
 
+  function decodeTripUpdates(input) {
+    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    let feedTimestamp = null;
+    const entities = [];
+    readFields(bytes, (field, wire, value) => {
+      if (field === 1 && wire === 2) feedTimestamp = parseHeader(value).timestamp ?? feedTimestamp;
+      else if (field === 2 && wire === 2) entities.push(value);
+    });
+    return entities.map((entity) => parseTripUpdateEntity(entity, feedTimestamp)).filter(Boolean);
+  }
+
   function decode(input) {
     const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
     let feedTimestamp = null;
@@ -152,5 +215,5 @@
     return entities.map((entity) => parseEntity(entity, feedTimestamp)).filter(Boolean);
   }
 
-  window.GTSOFIA_GTFS_RT = { decode };
+  window.GTSOFIA_GTFS_RT = { decode, decodeTripUpdates };
 })();
