@@ -1794,7 +1794,7 @@
     if (status === 'loading') {
       content = '<div class="stop-arrivals-state"><span class="stop-arrivals-spinner" aria-hidden="true"></span>Зареждане на пристиганията…</div>';
     } else if (status === 'error') {
-      content = '<div class="stop-arrivals-state is-error">В момента няма връзка с live данните за пристиганията от ЦГМ. Ще опитаме отново автоматично.</div>';
+      content = '<div class="stop-arrivals-state is-error">Не успяхме да заредим прогнозите от ЦГМ. Провери връзката и конзолата на браузъра; ще опитаме отново автоматично.</div>';
     } else if (!arrivals.length) {
       content = '<div class="stop-arrivals-state">Няма публикувани предстоящи realtime пристигания за тази спирка в момента.</div>';
     } else {
@@ -1839,19 +1839,32 @@
 
     const url = CONFIG.sources?.gtfs?.tripUpdatesUrl || 'https://gtfs.sofiatraffic.bg/api/v1/trip-updates';
     state.tripUpdatesRequest = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12_000);
       try {
+        // A plain GET avoids unnecessary CORS preflights on the public GTFS API.
         const response = await fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          credentials: 'omit',
           cache: 'no-store',
-          headers: { Accept: 'application/x-protobuf, application/octet-stream' }
+          signal: controller.signal
         });
         if (!response.ok) throw new Error(`GTFS TripUpdates HTTP ${response.status}`);
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        if (contentType.includes('text/html')) throw new Error('GTFS TripUpdates endpoint returned HTML instead of protobuf data');
         const bytes = new Uint8Array(await response.arrayBuffer());
+        if (!bytes.length) throw new Error('GTFS TripUpdates feed is empty');
         const decoder = window.GTSOFIA_GTFS_RT?.decodeTripUpdates;
         if (typeof decoder !== 'function') throw new Error('GTFS realtime decoder is not loaded');
         const updates = decoder(bytes);
         state.tripUpdatesCache = { updates, fetchedAt: Date.now() };
         return updates;
+      } catch (error) {
+        if (error?.name === 'AbortError') throw new Error('Връзката с GTFS TripUpdates отне твърде дълго.');
+        throw error;
       } finally {
+        clearTimeout(timeout);
         state.tripUpdatesRequest = null;
       }
     })();
@@ -1902,6 +1915,18 @@
       const routeId = firstClean(trip.route_id, update.routeId, currentVehicle?.gtfsRouteId);
       const route = state.routesById.get(routeId) || null;
       const catalogRoute = route ? null : state.routesByCgmId.get(routeId);
+      const directionId = trip.direction_id ?? currentVehicle?.directionId;
+      const directionText = String(directionId ?? '').trim();
+      const directionNumber = !directionText
+        ? Number.NaN
+        : (/^D\d+$/i.test(directionText)
+          ? Number(directionText.slice(1)) - 1
+          : Number(directionText));
+      const directionKey = Number.isInteger(directionNumber) && directionNumber >= 0
+        ? `D${directionNumber + 1}` : '';
+      const tripPattern = directionKey
+        ? (state.data?.directions?.[routeId]?.[directionKey]?.pattern || [])
+        : [];
       const routeRefValue = firstClean(currentVehicle?.routeRef, route ? routeRef(route) : '', catalogRoute?.route_ref);
       const type = currentVehicle?.type && currentVehicle.type !== 'other'
         ? currentVehicle.type
@@ -1922,12 +1947,29 @@
       }
 
       (update.stopTimeUpdates || []).forEach((stopUpdate) => {
-        if (!stopIds.has(String(stopUpdate.stopId)) || Number(stopUpdate.scheduleRelationship) === 1) return;
+        if (Number(stopUpdate.scheduleRelationship) === 1) return; // skipped stop
+        let realtimeStopId = cleanValue(stopUpdate.stopId);
+        const directStopMatches = (value) => {
+          if (!value) return false;
+          const normalized = stopCodeKey(value);
+          return stopIds.has(String(value)) || [...stopIds].some((id) => stopCodeKey(id) === normalized);
+        };
+        if (!directStopMatches(realtimeStopId) && Number.isFinite(Number(stopUpdate.stopSequence)) && tripPattern.length) {
+          // GTFS-RT allows stop_sequence instead of stop_id. Most Sofia GTFS
+          // patterns are ordered; try both common zero- and one-based positions.
+          const sequence = Number(stopUpdate.stopSequence);
+          const candidates = [...new Set([sequence > 0 ? sequence - 1 : sequence, sequence])]
+            .map((index) => tripPattern[index])
+            .filter((id) => id !== undefined);
+          realtimeStopId = candidates.find((id) => directStopMatches(id)) || realtimeStopId;
+        }
+        const stopMatches = directStopMatches(realtimeStopId);
+        if (!stopMatches) return;
         const event = stopUpdate.arrival?.time ? stopUpdate.arrival : stopUpdate.departure;
         const arrivalTime = Number(event?.time);
         if (!Number.isFinite(arrivalTime) || arrivalTime < nowSeconds - 60) return;
         const prediction = {
-          id: `${tripId}:${stopUpdate.stopId}`,
+          id: `${tripId}:${realtimeStopId || stopUpdate.stopSequence || stopUpdate.stopId}`,
           tripId,
           arrivalTime,
           delaySeconds: Number.isFinite(Number(event?.delay)) ? Number(event.delay) : null,
@@ -1990,7 +2032,10 @@
         renderer, bubblingMouseEvents: false
       });
       marker.bindPopup(() => stopPopupMarkup(stop, [], 'loading'), {
-        maxWidth: 330, minWidth: 275, autoPan: true, keepInView: true,
+        maxWidth: 330, minWidth: 275,
+        // Auto-pan emits map moveend, which used to rebuild the stop layer and
+        // immediately destroy the popup that had just been opened.
+        autoPan: false, keepInView: false,
         className: 'gts-stop-leaflet-popup'
       });
       marker.bindTooltip(`${stop.name} · ${stop.code}`, { direction: 'top', offset: [0, -4] });

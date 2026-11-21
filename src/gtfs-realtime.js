@@ -50,6 +50,7 @@
   }
 
   const asNumber = (value) => value === undefined || value === null ? null : Number(value);
+  const asSignedInt32 = (value) => value === undefined || value === null ? null : Number(BigInt.asIntN(32, value));
   const asString = (value) => value instanceof Uint8Array ? decoder.decode(value) : '';
 
   function parseHeader(bytes) {
@@ -108,7 +109,7 @@
     const event = {};
     readFields(bytes, (field, wire, value) => {
       if (wire !== 0) return;
-      if (field === 1) event.delay = Number((value >> 1n) ^ (-(value & 1n)));
+      if (field === 1) event.delay = asSignedInt32(value);
       else if (field === 2) event.time = asNumber(value);
       else if (field === 3) event.uncertainty = asNumber(value);
     });
@@ -134,7 +135,7 @@
       else if (wire === 2 && field === 2) result.stopTimeUpdates.push(parseStopTimeUpdate(value));
       else if (wire === 2 && field === 3) result.vehicle = parseVehicleDescriptor(value);
       else if (wire === 0 && field === 4) result.timestamp = asNumber(value);
-      else if (wire === 0 && field === 5) result.delay = Number((value >> 1n) ^ (-(value & 1n)));
+      else if (wire === 0 && field === 5) result.delay = asSignedInt32(value);
     });
     return result;
   }
@@ -151,7 +152,12 @@
     if (!tripUpdateBytes || deleted) return null;
     const result = parseTripUpdate(tripUpdateBytes, id, feedTimestamp);
     if (!result.trip?.trip_id) return null;
-    result.stopTimeUpdates = result.stopTimeUpdates.filter((item) => item.stopId);
+    // GTFS-RT permits a StopTimeUpdate to identify a stop by stop_sequence
+    // instead of stop_id. Keep both forms; the app resolves sequence numbers
+    // against the route/direction pattern when the stop_id is omitted.
+    result.stopTimeUpdates = result.stopTimeUpdates.filter((item) =>
+      item.stopId || Number.isFinite(Number(item.stopSequence))
+    );
     return result;
   }
 
