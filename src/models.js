@@ -341,16 +341,7 @@ const models = {
                 7177
             ],
             extras: ['ac', 'low_floor']
-        },
-        {
-            id: 'mb_capacity',
-            name: "Mercedes O530 CapaCity",
-            inv_number_ranges: [
-                [2400, 2411]
-            ],
-            extras: ['ac', 'low_floor'],
-            is_bendy: true
-        } 
+        }
     ]
 };
 
